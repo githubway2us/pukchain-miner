@@ -7,48 +7,54 @@ const SERVER_URL = "https://puchain.pukmupee.com";
 const PAGER_ID = "01-0001"; 
 const THREADS = require('os').cpus().length; 
 const CHECK_INTERVAL = 5000; // เช็ก Mempool ทุก 5 วินาที
-const MINE_DELAY = 10000;    // เจอแล้วรอ 10 วินาทีค่อยเริ่มขุด
+const MINE_DELAY = 10000;    // เจอ TX แล้วรอ 10 วินาทีให้คนส่งเพิ่มค่อยเริ่มขุด
 
 if (isMainThread) {
     console.clear();
-    console.log("\x1b[41m\x1b[37m %s \x1b[0m", " 🦁 PUK@ LION MINER: REMOTE WATCHER V.2.1.1 ");
-    console.log(`\x1b[33m[NODE]\x1b[0m ${SERVER_URL}`);
-    console.log(`\x1b[33m[STATUS]\x1b[0m Listening for Transactions...\n`);
+    console.log("\x1b[41m\x1b[37m %s \x1b[0m", " 🦁 PUK@ LION MINER: EVENT-DRIVEN V.2.1.2 ");
+    console.log(`\x1b[33m[NODE]\x1b[0m ${SERVER_URL} | \x1b[33m[THREADS]\x1b[0m ${THREADS}`);
+    console.log(`\x1b[32m[LOGIC]\x1b[0m No TX, No Mine. Standing by...\n`);
 
-    async function checkRemoteMempool() {
+    async function getJob() {
         try {
-            // เช็กผ่าน API ของ PUKChain โดยตรง
             const res = await axios.get(`${SERVER_URL}/get_mining_job`, { 
                 params: { pager_id: PAGER_ID },
                 timeout: 5000 
             });
-            
-            // ในระบบ PUKChain: ถ้า merkle_root ไม่ใช่ค่าว่าง หรือไม่ใช่ Default Hash 
-            // แสดงว่ามี Transaction รอให้ขุดอยู่ใน Block นั้นครับ
-            const hasTransactions = res.data.merkle_root && 
-                                    res.data.merkle_root !== "0".repeat(64) &&
-                                    res.data.merkle_root !== "bc5fb9935105... (ตัวอย่าง)"; // เช็กตาม Logic Server
-
-            return { hasTx: true, job: res.data }; // ส่ง Job กลับไปเลยจะได้ไม่ต้องดึงซ้ำ
+            return res.data;
         } catch (e) {
-            return { hasTx: false, job: null };
+            return null;
         }
     }
 
     async function monitor() {
         while (true) {
-            const { hasTx, job } = await checkRemoteMempool();
+            const job = await getJob();
+            
+            // Logic เช็กว่ามีธุรกรรมหรือไม่: Merkle Root ต้องไม่เป็นค่าว่าง (0ล้วน)
+            const emptyRoot = "0".repeat(64);
+            const hasTx = job && job.merkle_root && job.merkle_root !== emptyRoot;
 
             if (hasTx) {
-                console.log(`\n\x1b[42m\x1b[30m 🎯 TX FOUND! \x1b[0m Mempool is active. Waiting ${MINE_DELAY/1000}s...`);
+                console.log(`\n\x1b[42m\x1b[30m 🎯 TX DETECTED! \x1b[0m Merkle: ${job.merkle_root.substring(0,12)}...`);
+                console.log(`\x1b[33m[WAIT]\x1b[0m Buffering transactions for ${MINE_DELAY/1000}s...`);
                 
-                // --- [ กฎเหล็ก: รอ 10 วินาที ] ---
+                // รอ 10 วินาทีตามใจบรรพบุรุษ
                 await new Promise(r => setTimeout(r, MINE_DELAY));
 
-                // เริ่มขุดโดยใช้ Job ที่ดึงมาล่าสุด
-                await startMining(job);
+                // *** สำคัญ: ต้องดึง Job ใหม่หลังรอเสร็จ เพราะ prev_hash อาจเปลี่ยนไปแล้ว ***
+                process.stdout.write(`\x1b[36m[SYNC]\x1b[0m Fetching fresh job... `);
+                const freshJob = await getJob();
+                
+                if (freshJob && freshJob.merkle_root !== emptyRoot) {
+                    console.log(`Ready! Block #${freshJob.idx}`);
+                    await startMining(freshJob);
+                } else {
+                    console.log(`Cancelled (Mempool cleared or Error).`);
+                }
             } else {
-                process.stdout.write(`\x1b[34m👂 Listening...\x1b[0m No tasks in mempool. \r`);
+                // ถ้าไม่เจอธุรกรรม แค่แสดงสถานะ Listening แล้ววนต่อ (ไม่สั่งขุด)
+                process.stdout.write(`\x1b[34m👂 Listening...\x1b[0m Mempool empty. Standing by... \r`);
                 await new Promise(r => setTimeout(r, CHECK_INTERVAL));
             }
         }
@@ -58,8 +64,6 @@ if (isMainThread) {
         const { idx, prev_hash, merkle_root, difficulty } = job;
         const targetPrefix = "0".repeat(difficulty);
         const bits = difficulty.toString(16).padStart(8, '0');
-
-        console.log(`\x1b[36m[BLOCK #${idx}]\x1b[0m Mining started with ${THREADS} threads...`);
 
         return new Promise((resolve) => {
             const workers = [];
@@ -76,7 +80,7 @@ if (isMainThread) {
                     if (msg.type === 'found' && !found) {
                         found = true;
                         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-                        console.log(`\n\x1b[45m\x1b[37m 💰 BLOCK MINED! \x1b[0m Time: ${duration}s | Nonce: ${msg.nonce}`);
+                        console.log(`\n\x1b[45m\x1b[37m 💰 BLOCK SUCCESS! \x1b[0m Time: ${duration}s | Nonce: ${msg.nonce}`);
                         
                         try {
                             const postRes = await axios.post(`${SERVER_URL}/mine`, {
@@ -84,9 +88,9 @@ if (isMainThread) {
                                 nonce: parseInt(msg.nonce),
                                 timestamp: msg.timestamp
                             });
-                            console.log(`\x1b[32m[SERVER]\x1b[0m Result: ${postRes.data.message || "Success"}`);
+                            console.log(`\x1b[32m[SERVER]\x1b[0m ${postRes.data.message || "Block Accepted"}`);
                         } catch (e) {
-                            console.log(`\x1b[31m[FAILED]\x1b[0m Block rejected by server.`);
+                            console.log(`\x1b[31m[FAILED]\x1b[0m Block stale or rejected.`);
                         }
 
                         workers.forEach(w => w.terminate());
@@ -103,7 +107,7 @@ if (isMainThread) {
     monitor();
 
 } else {
-    // --- [ WORKER THREAD LOGIC ] ---
+    // --- [ WORKER THREAD LOGIC - CORE MINING ] ---
     const { idx, prev_hash, merkle_root, bits, targetPrefix } = workerData;
     const crypto = require('crypto');
 
@@ -126,7 +130,6 @@ if (isMainThread) {
             break;
         }
         
-        // ส่ง Stats ทุก 100,000 รอบเพื่อลด Overhead
         if (nonce % 100000 === 0) {
             parentPort.postMessage({ type: 'stats', count: 100000 });
         }
