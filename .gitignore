@@ -1,0 +1,5 @@
+node_modules/
+.env
+*.db
+pager_network.db
+npm-debug.log
