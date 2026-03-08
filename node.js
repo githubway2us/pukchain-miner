@@ -3,7 +3,7 @@ const axios = require('axios');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
 // ------------------ CONFIG ------------------
-const SERVER_URL = "http://localhost:8139";
+const SERVER_URL = "https://puchain.pukmupee.com";
 const DIFFICULTY = "000";
 const THREADS = require('os').cpus().length;
 
